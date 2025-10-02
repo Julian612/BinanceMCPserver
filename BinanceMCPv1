@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# --- Sanity ---
+if [[ $EUID -ne 0 ]]; then
+  echo "Bitte als root ausführen (sudo -i)."
+  exit 1
+fi
+
+echo "=== Binance MCP Server – Proxmox Helper ==="
+
+# --- Defaults ---
+APP_USER="binance-mcp"
+APP_DIR="/opt/BinanceMCPServer"
+VENV_DIR="${APP_DIR}/.venv"
+SERVICE_NAME="binance-mcp.service"
+
+# --- Fragen ---
+read -rp "Testnet verwenden? [y/N]: " USE_TESTNET_INPUT
+USE_TESTNET="${USE_TESTNET_INPUT:-N}"
+
+read -rp "Listen-Host [0.0.0.0]: " LISTEN_HOST
+LISTEN_HOST="${LISTEN_HOST:-0.0.0.0}"
+
+read -rp "Listen-Port [8765]: " LISTEN_PORT
+LISTEN_PORT="${LISTEN_PORT:-8765}"
+
+read -rp "Binance API Key (leer lassen für reinen Read-Only-Betrieb): " BINANCE_API_KEY
+read -rp "Binance API Secret (leer lassen für reinen Read-Only-Betrieb): " BINANCE_API_SECRET
+
+echo "Installationsquelle:"
+echo "  1) GitHub-Repository klonen (master/main)"
+echo "  2) PyPI-Paket binance-mcp-server (empfohlen vom Projekt)"
+read -rp "Quelle wählen [1/2, Default 1]: " SRC_CHOICE
+SRC_CHOICE="${SRC_CHOICE:-1}"
+
+# --- System-Dependencies ---
+echo ">> Installiere System-Dependencies…"
+apt-get update -y
+apt-get install -y git curl build-essential python3 python3-venv python3-pip pkg-config
+
+# --- Benutzer anlegen ---
+if ! id -u "${APP_USER}" >/dev/null 2>&1; then
+  useradd -r -s /usr/sbin/nologin -d "${APP_DIR}" "${APP_USER}"
+fi
+mkdir -p "${APP_DIR}"
+chown -R "${APP_USER}:${APP_USER}" "${APP_DIR}"
+
+# --- Code beziehen + venv ---
+if [[ "${SRC_CHOICE}" == "2" ]]; then
+  echo ">> PyPI-Installation (binance-mcp-server)…"
+  sudo -u "${APP_USER}" bash -c "
+    python3 -m venv '${VENV_DIR}'
+    source '${VENV_DIR}/bin/activate'
+    pip install --upgrade pip
+    pip install 'binance-mcp-server'
+  "
+else
+  echo ">> Klone GitHub-Repository AnalyticAce/BinanceMCPServer…"
+  if [[ -d "${APP_DIR}/.git" || -d "${APP_DIR}/binance_mcp_server" ]]; then
+    echo "   Repo scheint bereits vorhanden. Überspringe Clone."
+  else
+    sudo -u "${APP_USER}" git clone --depth=1 https://github.com/AnalyticAce/BinanceMCPServer "${APP_DIR}"
+  fi
+  echo ">> Installiere Python-Abhängigkeiten im venv…"
+  sudo -u "${APP_USER}" bash -c "
+    python3 -m venv '${VENV_DIR}'
+    source '${VENV_DIR}/bin/activate'
+    pip install --upgrade pip
+    # Bevorzugt Paketbau über pyproject
+    if [[ -f '${APP_DIR}/pyproject.toml' ]]; then
+      pip install '${APP_DIR}'
+    else
+      # Fallback: direktes Modul
+      pip install -r '${APP_DIR}/requirements.txt' || true
+    fi
+  "
+fi
+
+# --- Startkommando ermitteln ---
+SERVER_CMD="${VENV_DIR}/bin/binance-mcp-server"
+if [[ ! -x "${SERVER_CMD}" ]]; then
+  # Fallback auf Modulstart
+  SERVER_CMD="${VENV_DIR}/bin/python -m binance_mcp_server"
+fi
+
+# --- Environment Datei ---
+ENV_FILE="/etc/default/binance-mcp"
+TESTNET_FLAG=""
+if [[ "${USE_TESTNET^^}" == "Y" ]]; then
+  TESTNET_FLAG="--binance-testnet"
+fi
+
+cat > "${ENV_FILE}" <<EOF
+# Environment für Binance MCP Server
+BINANCE_API_KEY="${BINANCE_API_KEY}"
+BINANCE_API_SECRET="${BINANCE_API_SECRET}"
+MCP_HOST="${LISTEN_HOST}"
+MCP_PORT="${LISTEN_PORT}"
+BINANCE_TESTNET="$( [[ "${USE_TESTNET^^}" == "Y" ]] && echo "true" || echo "false" )"
+EOF
+chmod 640 "${ENV_FILE}"
+chown root:"${APP_USER}" "${ENV_FILE}"
+
+# --- systemd Unit ---
+cat > "/etc/systemd/system/${SERVICE_NAME}" <<EOF
+[Unit]
+Description=Binance MCP Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${APP_USER}
+Group=${APP_USER}
+EnvironmentFile=${ENV_FILE}
+WorkingDirectory=${APP_DIR}
+ExecStart=/bin/sh -lc '${SERVER_CMD} --host "${MCP_HOST}" --port "${MCP_PORT}" $( [ "\${BINANCE_TESTNET}" = "true" ] && echo "--binance-testnet" ) $( [ -n "\${BINANCE_API_KEY}" ] && echo --api-key "\"\${BINANCE_API_KEY}\"" ) $( [ -n "\${BINANCE_API_SECRET}" ] && echo --api-secret "\"\${BINANCE_API_SECRET}\"" )'
+Restart=on-failure
+RestartSec=3
+# Ressourcen etwas schonen
+Nice=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Platzhalter in ExecStart korrekt ersetzen: systemd liest ENV zur Laufzeit
+sed -i "s|MCP_HOST|MCP_HOST|g" "/etc/systemd/system/${SERVICE_NAME}"
+sed -i "s|MCP_PORT|MCP_PORT|g" "/etc/systemd/system/${SERVICE_NAME}"
+
+# --- Start ---
+systemctl daemon-reload
+systemctl enable --now "${SERVICE_NAME}"
+
+echo ">> Status:"
+systemctl --no-pager --full status "${SERVICE_NAME}" || true
+
+echo
+echo "Fertig."
+echo "Server lauscht auf ${LISTEN_HOST}:${LISTEN_PORT}  (Testnet: ${USE_TESTNET^^})."
+echo "Environment: ${ENV_FILE}"
+echo
+echo "Logs ansehen: journalctl -u ${SERVICE_NAME} -f"
+echo "Konfiguration ändern: nano ${ENV_FILE} && systemctl restart ${SERVICE_NAME}"
