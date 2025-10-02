@@ -1,109 +1,121 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# --- Sanity ---
-if [[ $EUID -ne 0 ]]; then
-  echo "Bitte als root ausführen (sudo -i)."
-  exit 1
-fi
+# ===== Proxmox LXC Setup für Binance MCP Server =====
+if [[ $EUID -ne 0 ]]; then echo "Bitte als root ausführen (sudo -i)."; exit 1; fi
 
-echo "=== Binance MCP Server – Proxmox Helper ==="
+echo "=== Binance MCP – LXC Installer (Proxmox) ==="
 
-# --- Defaults ---
-APP_USER="binance-mcp"
-APP_DIR="/opt/BinanceMCPServer"
-VENV_DIR="${APP_DIR}/.venv"
-SERVICE_NAME="binance-mcp.service"
+# --- Eingaben ---
+read -rp "CTID [219]: " CTID; CTID="${CTID:-219}"
+read -rp "Hostname [binance-mcp]: " HN; HN="${HN:-binance-mcp}"
 
-# --- Fragen ---
-read -rp "Testnet verwenden? [y/N]: " USE_TESTNET_INPUT
-USE_TESTNET="${USE_TESTNET_INPUT:-N}"
+echo "Verfügbare Storages:"
+pvesm status | awk 'NR==1 || /dir|zfspool|lvmthin|nfs|ceph/'
+read -rp "Rootfs-Storage (z.B. local-lvm / zfs / nfs) [local-lvm]: " STORAGE; STORAGE="${STORAGE:-local-lvm}"
+read -rp "Rootfs-Grösse in GB [8]: " ROOTFS_GB; ROOTFS_GB="${ROOTFS_GB:-8}"
 
-read -rp "Listen-Host [0.0.0.0]: " LISTEN_HOST
-LISTEN_HOST="${LISTEN_HOST:-0.0.0.0}"
+read -rp "Bridge [vmbr0]: " BR; BR="${BR:-vmbr0}"
+read -rp "DHCP verwenden? [Y/n]: " DHCP; DHCP="${DHCP:-Y}"
 
-read -rp "Listen-Port [8765]: " LISTEN_PORT
-LISTEN_PORT="${LISTEN_PORT:-8765}"
-
-read -rp "Binance API Key (leer lassen für reinen Read-Only-Betrieb): " BINANCE_API_KEY
-read -rp "Binance API Secret (leer lassen für reinen Read-Only-Betrieb): " BINANCE_API_SECRET
-
-echo "Installationsquelle:"
-echo "  1) GitHub-Repository klonen (master/main)"
-echo "  2) PyPI-Paket binance-mcp-server (empfohlen vom Projekt)"
-read -rp "Quelle wählen [1/2, Default 1]: " SRC_CHOICE
-SRC_CHOICE="${SRC_CHOICE:-1}"
-
-# --- System-Dependencies ---
-echo ">> Installiere System-Dependencies…"
-apt-get update -y
-apt-get install -y git curl build-essential python3 python3-venv python3-pip pkg-config
-
-# --- Benutzer anlegen ---
-if ! id -u "${APP_USER}" >/dev/null 2>&1; then
-  useradd -r -s /usr/sbin/nologin -d "${APP_DIR}" "${APP_USER}"
-fi
-mkdir -p "${APP_DIR}"
-chown -R "${APP_USER}:${APP_USER}" "${APP_DIR}"
-
-# --- Code beziehen + venv ---
-if [[ "${SRC_CHOICE}" == "2" ]]; then
-  echo ">> PyPI-Installation (binance-mcp-server)…"
-  sudo -u "${APP_USER}" bash -c "
-    python3 -m venv '${VENV_DIR}'
-    source '${VENV_DIR}/bin/activate'
-    pip install --upgrade pip
-    pip install 'binance-mcp-server'
-  "
+IPCFG=""
+if [[ "${DHCP^^}" == "Y" ]]; then
+  IPCFG="ip=dhcp"
 else
-  echo ">> Klone GitHub-Repository AnalyticAce/BinanceMCPServer…"
-  if [[ -d "${APP_DIR}/.git" || -d "${APP_DIR}/binance_mcp_server" ]]; then
-    echo "   Repo scheint bereits vorhanden. Überspringe Clone."
-  else
-    sudo -u "${APP_USER}" git clone --depth=1 https://github.com/AnalyticAce/BinanceMCPServer "${APP_DIR}"
-  fi
-  echo ">> Installiere Python-Abhängigkeiten im venv…"
-  sudo -u "${APP_USER}" bash -c "
-    python3 -m venv '${VENV_DIR}'
-    source '${VENV_DIR}/bin/activate'
-    pip install --upgrade pip
-    # Bevorzugt Paketbau über pyproject
-    if [[ -f '${APP_DIR}/pyproject.toml' ]]; then
-      pip install '${APP_DIR}'
-    else
-      # Fallback: direktes Modul
-      pip install -r '${APP_DIR}/requirements.txt' || true
-    fi
-  "
+  read -rp "Statische IPv4 (CIDR), z.B. 192.168.1.50/24: " IP4
+  read -rp "Gateway IPv4, z.B. 192.168.1.1: " GW4
+  IPCFG="ip=${IP4},gw=${GW4}"
 fi
 
-# --- Startkommando ermitteln ---
-SERVER_CMD="${VENV_DIR}/bin/binance-mcp-server"
-if [[ ! -x "${SERVER_CMD}" ]]; then
-  # Fallback auf Modulstart
-  SERVER_CMD="${VENV_DIR}/bin/python -m binance_mcp_server"
+read -rp "Port für MCP [8765]: " MCP_PORT; MCP_PORT="${MCP_PORT:-8765}"
+read -rp "Testnet verwenden? [y/N]: " USE_TESTNET; USE_TESTNET="${USE_TESTNET:-N}"
+read -rp "Binance API Key (leer = nur öffentliche Endpunkte): " BAPI
+read -rp "Binance API Secret (leer = nur öffentliche Endpunkte): " BSEC
+
+# Optional: bevorzugtes Repo (Fallback, falls PyPI nicht verfügbar)
+read -rp "Git-Repo für Fallback [https://github.com/AnalyticAce/BinanceMCPServer]: " REPO_URL
+REPO_URL="${REPO_URL:-https://github.com/AnalyticAce/BinanceMCPServer}"
+
+# --- Debian 12 Template holen ---
+echo ">> Lade Debian 12 Template (falls nicht vorhanden)…"
+pveam update
+TPL=$(pveam available | awk '/debian-12-standard_.*_amd64\.tar\.zst/{print $2}' | tail -n1)
+if [[ -z "${TPL}" ]]; then echo "Kein Debian-12-Template gefunden."; exit 1; fi
+if [[ ! -f "/var/lib/vz/template/cache/$(basename "$TPL")" ]]; then
+  pveam download local "$TPL"
+fi
+TPLPATH="/var/lib/vz/template/cache/$(basename "$TPL")"
+
+# --- Root-Passwort generieren ---
+ROOTPW="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20)"
+
+# --- Container anlegen ---
+echo ">> Erstelle Container CTID ${CTID}…"
+pct create "${CTID}" "${TPLPATH}" \
+  --hostname "${HN}" \
+  --unprivileged 1 \
+  --features nesting=1 \
+  --cores 2 --memory 1024 --swap 512 \
+  --rootfs "${STORAGE}:${ROOTFS_GB}" \
+  --net0 "name=eth0,bridge=${BR},${IPCFG}" \
+  --password "${ROOTPW}"
+
+pct start "${CTID}"
+
+# --- Auf IP warten (bei DHCP) ---
+echo ">> Warte auf Netzwerk…"
+TRY=0; CTIP=""
+while [[ $TRY -lt 30 ]]; do
+  sleep 2
+  set +e
+  CTIP=$(pct exec "${CTID}" -- bash -lc "ip -4 -o addr show dev eth0 | awk '{print \$4}' | cut -d/ -f1" 2>/dev/null | head -n1)
+  set -e
+  [[ -n "$CTIP" ]] && break
+  ((TRY++))
+done
+
+# Wenn statisch, IP aus Eingabe übernehmen
+if [[ -z "${CTIP}" && "${DHCP^^}" != "Y" ]]; then
+  CTIP="${IP4%/*}"
 fi
 
-# --- Environment Datei ---
-ENV_FILE="/etc/default/binance-mcp"
-TESTNET_FLAG=""
-if [[ "${USE_TESTNET^^}" == "Y" ]]; then
-  TESTNET_FLAG="--binance-testnet"
+# --- Installation im Container ---
+echo ">> Installiere Abhängigkeiten und MCP Server im Container…"
+pct exec "${CTID}" -- bash -lc "set -e
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y python3 python3-venv python3-pip git build-essential pkg-config curl ca-certificates
+
+useradd -r -s /usr/sbin/nologin -d /opt/BinanceMCPServer binance-mcp || true
+mkdir -p /opt/BinanceMCPServer
+chown -R binance-mcp:binance-mcp /opt/BinanceMCPServer
+
+cd /opt/BinanceMCPServer
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+
+# Bevorzugt PyPI
+if ! pip install binance-mcp-server >/tmp/pip_install.log 2>&1; then
+  echo 'PyPI-Installation fehlgeschlagen, klone Fallback-Repo' >&2
+  rm -rf /opt/BinanceMCPServer/src && mkdir -p /opt/BinanceMCPServer/src
+  git clone --depth=1 '${REPO_URL}' /opt/BinanceMCPServer/src
+  pip install /opt/BinanceMCPServer/src || { echo 'Fallback-Installation fehlgeschlagen'; exit 1; }
 fi
 
-cat > "${ENV_FILE}" <<EOF
-# Environment für Binance MCP Server
-BINANCE_API_KEY="${BINANCE_API_KEY}"
-BINANCE_API_SECRET="${BINANCE_API_SECRET}"
-MCP_HOST="${LISTEN_HOST}"
-MCP_PORT="${LISTEN_PORT}"
-BINANCE_TESTNET="$( [[ "${USE_TESTNET^^}" == "Y" ]] && echo "true" || echo "false" )"
-EOF
-chmod 640 "${ENV_FILE}"
-chown root:"${APP_USER}" "${ENV_FILE}"
+# Env
+cat >/etc/default/binance-mcp <<EOFENV
+BINANCE_API_KEY='${BAPI}'
+BINANCE_API_SECRET='${BSEC}'
+MCP_HOST='0.0.0.0'
+MCP_PORT='${MCP_PORT}'
+BINANCE_TESTNET='$( [[ \"${USE_TESTNET^^}\" == \"Y\" ]] && echo true || echo false )'
+EOFENV
+chmod 640 /etc/default/binance-mcp
+chown root:root /etc/default/binance-mcp
 
-# --- systemd Unit ---
-cat > "/etc/systemd/system/${SERVICE_NAME}" <<EOF
+# Dienst
+cat >/etc/systemd/system/binance-mcp.service <<'EOUNIT'
 [Unit]
 Description=Binance MCP Server
 After=network-online.target
@@ -111,15 +123,13 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=${APP_USER}
-Group=${APP_USER}
-EnvironmentFile=${ENV_FILE}
-WorkingDirectory=${APP_DIR}
-ExecStart=/bin/sh -lc '${SERVER_CMD} --host "${MCP_HOST}" --port "${MCP_PORT}" $( [ "\${BINANCE_TESTNET}" = "true" ] && echo "--binance-testnet" ) $( [ -n "\${BINANCE_API_KEY}" ] && echo --api-key "\"\${BINANCE_API_KEY}\"" ) $( [ -n "\${BINANCE_API_SECRET}" ] && echo --api-secret "\"\${BINANCE_API_SECRET}\"" )'
+User=binance-mcp
+Group=binance-mcp
+EnvironmentFile=/etc/default/binance-mcp
+WorkingDirectory=/opt/BinanceMCPServer
+ExecStart=/bin/sh -lc '/opt/BinanceMCPServer/.venv/bin/binance-mcp-server --host \"${MCP_HOST}\" --port \"${MCP_PORT}\" $( [ \"${BINANCE_TESTNET}\" = \"true\" ] && echo --binance-testnet ) $( [ -n \"${BINANCE_API_KEY}\" ] && echo --api-key \"${BINANCE_API_KEY}\" ) $( [ -n \"${BINANCE_API_SECRET}\" ] && echo --api-secret \"${BINANCE_API_SECRET}\" )'
 Restart=on-failure
 RestartSec=3
-# Ressourcen etwas schonen
-Nice=5
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
@@ -127,23 +137,28 @@ ProtectHome=true
 
 [Install]
 WantedBy=multi-user.target
-EOF
+EOUNIT
 
-# Platzhalter in ExecStart korrekt ersetzen: systemd liest ENV zur Laufzeit
-sed -i "s|MCP_HOST|MCP_HOST|g" "/etc/systemd/system/${SERVICE_NAME}"
-sed -i "s|MCP_PORT|MCP_PORT|g" "/etc/systemd/system/${SERVICE_NAME}"
-
-# --- Start ---
 systemctl daemon-reload
-systemctl enable --now "${SERVICE_NAME}"
+systemctl enable --now binance-mcp.service
+"
 
-echo ">> Status:"
-systemctl --no-pager --full status "${SERVICE_NAME}" || true
-
+# --- Zusammenfassung ---
 echo
-echo "Fertig."
-echo "Server lauscht auf ${LISTEN_HOST}:${LISTEN_PORT}  (Testnet: ${USE_TESTNET^^})."
-echo "Environment: ${ENV_FILE}"
+echo "========= Zusammenfassung ========="
+echo "CTID:            ${CTID}"
+echo "Hostname:        ${HN}"
+echo "Container-RootPW:${ROOTPW}"
+echo "Bridge:          ${BR}"
+echo "IP (CT):         ${CTIP:-unbekannt}"
+echo "Port (MCP):      ${MCP_PORT}"
+echo "Testnet:         ${USE_TESTNET^^}"
+echo "Service:         systemctl status binance-mcp -l   (im Container)"
+echo "Logs:            journalctl -u binance-mcp -f      (im Container)"
+echo "Env-Datei:       /etc/default/binance-mcp          (im Container)"
+echo "==================================="
 echo
-echo "Logs ansehen: journalctl -u ${SERVICE_NAME} -f"
-echo "Konfiguration ändern: nano ${ENV_FILE} && systemctl restart ${SERVICE_NAME}"
+echo "n8n HTTP-Node Beispiel-URL: http://${CTIP:-<CT-IP-unbekannt>}:${MCP_PORT}/binance_rest"
+echo "Beispiel-Body: {\"method\":\"GET\",\"path\":\"/api/v3/ticker/price\",\"query\":{\"symbol\":\"BTCUSDT\"},\"security\":\"NONE\"}"
+echo
+echo "In den Container: pct enter ${CTID}"
