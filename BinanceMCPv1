@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eo pipefail
 
 # ===== Proxmox LXC Setup für Binance MCP Server =====
 if [[ $EUID -ne 0 ]]; then echo "Bitte als root ausführen (sudo -i)."; exit 1; fi
@@ -16,21 +16,32 @@ read -rp "Rootfs-Storage (z.B. local-lvm / zfs / nfs) [local-lvm]: " STORAGE; ST
 read -rp "Rootfs-Grösse in GB [8]: " ROOTFS_GB; ROOTFS_GB="${ROOTFS_GB:-8}"
 
 read -rp "Bridge [vmbr0]: " BR; BR="${BR:-vmbr0}"
-read -rp "DHCP verwenden? [Y/n]: " DHCP; DHCP="${DHCP:-Y}"
+read -rp "DHCP verwenden? [Y/n]: " USE_DHCP
+# Initialisiere DHCP-Variable mit Standardwert, wenn leer
+USE_DHCP="${USE_DHCP:-Y}"
 
 IPCFG=""
-if [[ "${DHCP^^}" == "Y" ]]; then
+if [[ "${USE_DHCP^^}" == "Y" ]]; then
   IPCFG="ip=dhcp"
+  IP4=""
+  GW4=""
 else
   read -rp "Statische IPv4 (CIDR), z.B. 192.168.1.50/24: " IP4
   read -rp "Gateway IPv4, z.B. 192.168.1.1: " GW4
+  # Prüfe, ob die notwendigen Werte eingegeben wurden
+  if [[ -z "$IP4" || -z "$GW4" ]]; then
+    echo "Fehler: IP-Adresse und Gateway müssen angegeben werden für statische IP-Konfiguration."
+    exit 1
+  fi
   IPCFG="ip=${IP4},gw=${GW4}"
 fi
 
 read -rp "Port für MCP [8765]: " MCP_PORT; MCP_PORT="${MCP_PORT:-8765}"
 read -rp "Testnet verwenden? [y/N]: " USE_TESTNET; USE_TESTNET="${USE_TESTNET:-N}"
 read -rp "Binance API Key (leer = nur öffentliche Endpunkte): " BAPI
+BAPI="${BAPI:-}"
 read -rp "Binance API Secret (leer = nur öffentliche Endpunkte): " BSEC
+BSEC="${BSEC:-}"
 
 # Optional: bevorzugtes Repo (Fallback, falls PyPI nicht verfügbar)
 read -rp "Git-Repo für Fallback [https://github.com/AnalyticAce/BinanceMCPServer]: " REPO_URL
@@ -75,7 +86,7 @@ while [[ $TRY -lt 30 ]]; do
 done
 
 # Wenn statisch, IP aus Eingabe übernehmen
-if [[ -z "${CTIP}" && "${DHCP^^}" != "Y" ]]; then
+if [[ -z "${CTIP}" && "${USE_DHCP^^}" != "Y" ]]; then
   CTIP="${IP4%/*}"
 fi
 
@@ -127,7 +138,7 @@ User=binance-mcp
 Group=binance-mcp
 EnvironmentFile=/etc/default/binance-mcp
 WorkingDirectory=/opt/BinanceMCPServer
-ExecStart=/bin/sh -lc '/opt/BinanceMCPServer/.venv/bin/binance-mcp-server --host \"${MCP_HOST}\" --port \"${MCP_PORT}\" $( [ \"${BINANCE_TESTNET}\" = \"true\" ] && echo --binance-testnet ) $( [ -n \"${BINANCE_API_KEY}\" ] && echo --api-key \"${BINANCE_API_KEY}\" ) $( [ -n \"${BINANCE_API_SECRET}\" ] && echo --api-secret \"${BINANCE_API_SECRET}\" )'
+ExecStart=/bin/sh -lc '/opt/BinanceMCPServer/.venv/bin/binance-mcp-server --host \"\${MCP_HOST}\" --port \"\${MCP_PORT}\" \$( [ \"\${BINANCE_TESTNET}\" = \"true\" ] && echo --binance-testnet ) \$( [ -n \"\${BINANCE_API_KEY}\" ] && [ -n \"\${BINANCE_API_SECRET}\" ] && echo --binance-api-key \"\${BINANCE_API_KEY}\" --binance-api-secret \"\${BINANCE_API_SECRET}\" )'
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=true
