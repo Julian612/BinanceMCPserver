@@ -1,0 +1,25 @@
+[Unit]
+Description=Binance MCP Server
+After=network.target
+
+[Service]
+Type=simple
+User=mcpuser
+WorkingDirectory=/opt/binance-mcp
+EnvironmentFile=/opt/binance-mcp/.env
+ExecStart=/opt/binance-mcp/.venv/bin/python server.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Sicherheitshärtung
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/binance-mcp
+ReadWritePaths=/var/log
+
+[Install]
+WantedBy=multi-user.target
