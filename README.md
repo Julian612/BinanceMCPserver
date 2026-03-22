@@ -1,106 +1,104 @@
 # Binance MCP Server
 
-Vollständiger Binance-Trading-MCP-Server auf Basis von **Python / FastMCP / ccxt**.
-Deckt alle vier Trading-Bereiche ab: Spot, USD-M Futures, Options und Account/Portfolio.
+Ein vollständiger Binance Trading MCP-Server auf Basis von Python/FastMCP und ccxt.
+Deckt alle vier Trading-Bereiche ab: Spot, USD-M Futures, Options und Marktdaten.
+Läuft via stdio und ist optimiert für den Einsatz auf einem Proxmox LXC (Debian/Ubuntu).
 
----
+## Installation (Proxmox Helper Script)
 
-## ⚡ Schnellinstallation (Proxmox LXC / Debian / Ubuntu)
-
-Einzeilen-Installer – einfach in der Root-Shell des LXC ausführen:
+Auf dem Proxmox-Host ausführen:
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/Julian612/BinanceMCPserver/main/install.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Julian612/BinanceMCPserver/main/ct/binance-mcp.sh)"
 ```
 
-Der Installer erledigt automatisch:
-- System-Pakete installieren (python3, git, curl)
-- `uv` (Python Package Manager) installieren
-- Repository nach `/opt/binance-mcp` clonen
-- Virtual Environment anlegen und Dependencies installieren
-- API-Keys interaktiv abfragen und in `.env` schreiben
-- Systemd-Service einrichten, aktivieren und starten
+Das Script erstellt automatisch einen Debian 12 LXC Container, installiert alle
+Abhängigkeiten mit `uv` und richtet den systemd-Service ein.
+Nach der Installation: `.env` im Container konfigurieren, dann Service starten:
 
----
+```bash
+# Im Container
+nano /opt/binance-mcp/.env
+systemctl start binance-mcp
+```
 
-## Verfügbare Tools (22 MCP-Tools)
+## Verfügbare Tools
 
-### Marktdaten (öffentlich – kein API-Key nötig)
+### Marktdaten (öffentlich – kein API Key erforderlich)
 | Tool | Beschreibung |
-|------|-------------|
+|---|---|
 | `get_price` | Aktueller Preis für ein Symbol |
-| `get_ticker` | Vollständiger 24h-Ticker (bid, ask, volume, change) |
-| `get_orderbook` | Order Book (bids/asks, einstellbare Tiefe) |
-| `get_ohlcv` | OHLCV-Candlestick-Daten (timestamp, open, high, low, close, volume) |
+| `get_ticker` | Vollständiger Ticker (Bid/Ask, Volumen, 24h-Änderung) |
+| `get_orderbook` | Order Book (Bids/Asks) |
+| `get_ohlcv` | Candlestick-Daten (OHLCV) |
 | `get_markets` | Verfügbare Märkte (spot/future/option) |
-| `search_symbols` | Symbol-Suche nach Stichwort |
+| `search_symbols` | Symbol-Suche |
 
-### Account & Portfolio (API-Key erforderlich)
+### Account & Portfolio (API Key erforderlich)
 | Tool | Beschreibung |
-|------|-------------|
-| `get_balance` | Balance für spot/future/option (nur non-zero Assets) |
-| `get_open_orders` | Offene Orders (optional nach Symbol gefiltert) |
-| `get_order_history` | Order-Historie |
+|---|---|
+| `get_balance` | Guthaben für spot/future/option |
+| `get_open_orders` | Offene Orders |
+| `get_order_history` | Order-History |
 | `get_positions` | Offene Futures-Positionen mit PnL |
-| `get_pnl_summary` | Unrealized PnL über alle Positionen |
+| `get_pnl_summary` | Unrealized + Realized PnL Zusammenfassung |
 
-### Spot Trading (API-Key erforderlich)
+### Spot Trading (API Key + Trading-Berechtigung)
 | Tool | Beschreibung |
-|------|-------------|
-| `place_spot_order` | Market/Limit-Order platzieren |
+|---|---|
+| `place_spot_order` | Order platzieren (market/limit) |
 | `cancel_spot_order` | Order stornieren |
-| `cancel_all_spot_orders` | Alle Orders stornieren (optional nach Symbol) |
+| `cancel_all_spot_orders` | Alle Orders stornieren |
 
-### USD-M Futures (API-Key erforderlich)
+### USD-M Futures Trading
 | Tool | Beschreibung |
-|------|-------------|
-| `place_futures_order` | Futures-Order platzieren (inkl. reduce_only) |
+|---|---|
+| `place_futures_order` | Futures Order platzieren |
 | `cancel_futures_order` | Order stornieren |
 | `set_leverage` | Leverage setzen (1–125) |
-| `set_margin_mode` | `isolated` oder `cross` |
-| `close_position` | Position schließen (teilweise oder vollständig) |
+| `set_margin_mode` | Margin-Modus: isolated/cross |
+| `close_position` | Position schliessen |
 
-### Options (API-Key erforderlich)
+### Options Trading
 | Tool | Beschreibung |
-|------|-------------|
-| `get_option_chain` | Alle verfügbaren Kontrakte für ein Underlying |
-| `place_options_order` | Options-Order platzieren |
-| `cancel_options_order` | Options-Order stornieren |
+|---|---|
+| `get_option_chain` | Alle Options für ein Underlying (z.B. BTC) |
+| `place_options_order` | Options Order platzieren |
+| `cancel_options_order` | Options Order stornieren |
 
 ---
 
-## Manuelle Installation
-
-### Voraussetzungen
-- Debian 11/12 oder Ubuntu 22.04/24.04
-- Python 3.11+
-- [uv](https://docs.astral.sh/uv/) (Package Manager)
+## Proxmox LXC Setup
 
 ### 1. LXC erstellen (Proxmox UI)
-```
-Template : Debian 12
-RAM      : 512 MB (1 GB empfohlen für mehrere MCP-Server)
-Disk     : 4 GB
-Netzwerk : DHCP oder statische IP
-```
+
+- **Template:** Debian 12 (oder Ubuntu 22.04/24.04)
+- **RAM:** 512 MB (empfohlen: 1 GB für MCP Host mit mehreren Servern)
+- **Disk:** 4 GB (empfohlen: 8 GB)
+- **CPU:** 1 vCore (empfohlen: 2)
+- **Netzwerk:** DHCP oder statische IP (feste IP für MCP Host empfohlen)
+- **Features:** Nesting aktiviert (für systemd)
 
 ### 2. Basis-Setup im LXC
+
 ```bash
-apt update && apt install -y python3 python3-pip python3-venv git curl ca-certificates
+apt update && apt install -y python3 python3-pip curl git build-essential
 curl -LsSf https://astral.sh/uv/install.sh | sh
-source ~/.bashrc   # oder neu einloggen
+source $HOME/.local/bin/env   # oder neu einloggen
 ```
 
-### 3. Repository klonen & Dependencies installieren
+### 3. Deployment
+
 ```bash
 mkdir -p /opt/binance-mcp
 cd /opt/binance-mcp
-git clone https://github.com/Julian612/BinanceMCPserver.git .
+git clone <repo-url> .
 uv venv
 uv sync
 ```
 
-### 4. API-Keys konfigurieren
+### 4. API Keys konfigurieren
+
 ```bash
 cp .env.example .env
 nano .env   # BINANCE_API_KEY und BINANCE_API_SECRET eintragen
@@ -114,13 +112,15 @@ BINANCE_API_SECRET=dein_api_secret
 BINANCE_TESTNET=false
 ```
 
-### 5. Dedizierten User anlegen (Security)
+### 5. Systemuser anlegen (Security)
+
 ```bash
-useradd --system --no-create-home --shell /bin/false mcpuser
+useradd -r -s /bin/false -d /opt/binance-mcp mcpuser
 chown -R mcpuser:mcpuser /opt/binance-mcp
 ```
 
 ### 6. systemd Service einrichten
+
 ```bash
 cp deploy/binance-mcp.service /etc/systemd/system/
 systemctl daemon-reload
@@ -129,16 +129,8 @@ systemctl start binance-mcp
 systemctl status binance-mcp
 ```
 
-### 7. Logs prüfen
-```bash
-journalctl -u binance-mcp -f
-```
+### 7. MCP Client Konfiguration (Claude Desktop / Cline / etc.)
 
----
-
-## MCP-Client Konfiguration
-
-### Claude Desktop / Cline / OpenClaw
 ```json
 {
   "mcpServers": {
@@ -150,98 +142,99 @@ journalctl -u binance-mcp -f
 }
 ```
 
-### Direkter Test (ohne systemd)
+### 8. Logs prüfen
+
 ```bash
-cd /opt/binance-mcp
-.venv/bin/python server.py
+journalctl -u binance-mcp -f
+journalctl -u binance-mcp --since "1 hour ago"
 ```
 
 ---
 
-## MCP Host LXC – Mehrere Server auf einem Host
+## MCP Host LXC – Zentraler Host für mehrere MCP Server
 
-Dieser LXC eignet sich als zentraler Host für mehrere MCP-Server.
+Dieser LXC dient als Heimat für alle MCP Server. Die Verzeichnisstruktur
+erlaubt einfaches Hinzufügen weiterer Server.
 
 ### Verzeichnisstruktur
+
 ```
 /opt/mcp/
 ├── binance-mcp/          # Dieser Server
-├── <weiterer-mcp>/       # Platz für weitere Server
+├── <weiterer-mcp>/       # Platz für weitere MCP Server
 └── shared/
     └── logs/             # Zentrale Log-Ablage
 ```
 
-### Ressourcen-Empfehlung
-| Ressource | Empfehlung |
-|-----------|-----------|
-| RAM | 1 GB (für 3–5 MCP-Server) |
-| Disk | 8 GB |
-| CPU | 1–2 vCores |
-| Netzwerk | Feste IP empfohlen (z.B. `192.168.x.50`) |
+Setup:
 
-### Zentral-Management via `deploy/manage.sh`
 ```bash
-# Alle Services starten/stoppen/neustarten
-/opt/binance-mcp/deploy/manage.sh start all
-/opt/binance-mcp/deploy/manage.sh status all
-/opt/binance-mcp/deploy/manage.sh logs binance-mcp
-
-# Skript global verfügbar machen
-ln -s /opt/binance-mcp/deploy/manage.sh /usr/local/bin/mcp-manage
-mcp-manage status all
+mkdir -p /opt/mcp/shared/logs
+ln -s /opt/binance-mcp /opt/mcp/binance-mcp
 ```
+
+### Zentrales Management-Script
+
+Das Script `deploy/manage.sh` verwaltet alle MCP-Services:
+
+```bash
+chmod +x /opt/binance-mcp/deploy/manage.sh
+cp /opt/binance-mcp/deploy/manage.sh /opt/mcp/manage.sh
+
+# Verwendung
+/opt/mcp/manage.sh status
+/opt/mcp/manage.sh start all
+/opt/mcp/manage.sh restart binance-mcp
+/opt/mcp/manage.sh stop all
+```
+
+Um weitere Services hinzuzufügen, die `SERVICES`-Array-Variable in `manage.sh` erweitern:
+```bash
+SERVICES=("binance-mcp" "neuer-mcp-service")
+```
+
+### Ressourcen-Empfehlung für MCP Host LXC
+
+| Ressource | Minimum | Empfohlen (3–5 Server) |
+|---|---|---|
+| RAM | 512 MB | 1 GB |
+| Disk | 4 GB | 8 GB |
+| CPU | 1 vCore | 2 vCores |
+| Netzwerk | DHCP | Feste IP (z.B. 192.168.x.50) |
 
 ---
 
-## Projektstruktur
+## Entwicklung & Testnet
 
+### Testnet aktivieren
+
+In `.env`:
+```env
+BINANCE_TESTNET=true
 ```
-binance-mcp/
-├── install.sh                  # ⚡ Proxmox-style One-Liner Installer
-├── server.py                   # Einstiegspunkt (stdio MCP)
-├── pyproject.toml
-├── .env.example
-├── .gitignore
-├── binance_mcp/
-│   ├── client.py               # ccxt Exchange-Instanzen (spot/futures/options)
-│   ├── tools/
-│   │   ├── market_data.py      # Öffentliche Marktdaten
-│   │   ├── spot.py             # Spot Trading
-│   │   ├── futures.py          # USD-M Futures
-│   │   ├── options.py          # Options
-│   │   └── account.py          # Account & Portfolio
-│   └── utils/
-│       └── formatting.py       # Response-Formatierung
-└── deploy/
-    ├── binance-mcp.service     # systemd Unit File
-    └── manage.sh               # Multi-Service Manager
+
+Testnet API Keys von [testnet.binance.vision](https://testnet.binance.vision) holen.
+
+### Lokaler Start (ohne systemd)
+
+```bash
+cd /opt/binance-mcp
+uv run python server.py
+```
+
+### Abhängigkeiten aktualisieren
+
+```bash
+uv sync --upgrade
 ```
 
 ---
 
 ## Sicherheitshinweise
 
-- API-Keys werden **niemals** in Responses zurückgegeben
-- `.env` immer auf `chmod 600` setzen
-- Service läuft als unprivilegierter `mcpuser` (kein Shell-Login)
-- `enableRateLimit=True` verhindert Rate-Limit-Bans bei Binance
-- Für Tests und Entwicklung: `BINANCE_TESTNET=true` setzen
-
----
-
-## Testnet
-
-Binance Testnet für risikofreies Testen:
-1. Account anlegen: [testnet.binance.vision](https://testnet.binance.vision)
-2. In `.env` setzen: `BINANCE_TESTNET=true`
-3. Service neu starten: `systemctl restart binance-mcp`
-
----
-
-## Stack
-
-- **Python 3.11+** – Runtime
-- **FastMCP** – MCP Server Framework
-- **ccxt** – Unified Crypto Exchange Library (Binance API)
-- **python-dotenv** – Environment Variable Management
-- **uv** – Python Package Manager
+- API Keys **niemals** in Logs, Git oder Responses ausgeben
+- `.env` Datei mit `chmod 600 .env` schützen
+- Für reine Marktdaten-Abfragen keinen API Key konfigurieren
+- Futures- und Options-Trading nur mit explizit freigeschalteten API Keys
+- Testnet für alle Entwicklungs- und Testzwecke nutzen
+- Den `mcpuser` ohne Login-Shell anlegen (`/bin/false`)
