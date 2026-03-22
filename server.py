@@ -1,11 +1,8 @@
 """
-Binance MCP Server – Einstiegspunkt.
+Binance MCP Server – entry point.
 
-Startet einen FastMCP-Server im stdio-Modus mit allen Trading-Tools
-für Spot, USD-M Futures, Options und Marktdaten.
-
-Logging geht ausschliesslich nach stderr, um das stdio MCP-Protokoll
-nicht zu stören.
+Runs via stdio so ALL logging goes exclusively to stderr.
+Never write to stdout – it breaks the MCP protocol.
 """
 
 import logging
@@ -15,18 +12,18 @@ from mcp.server.fastmcp import FastMCP
 
 from binance_mcp.tools import account, futures, market_data, options, spot
 
-# Logging NUR nach stderr – stdout ist für das MCP-Protokoll reserviert
+# ── Logging: stderr only ──────────────────────────────────────────────────────
 logging.basicConfig(
     stream=sys.stderr,
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("binance-mcp")
 
-# FastMCP-Instanz
+# ── FastMCP server ────────────────────────────────────────────────────────────
 mcp = FastMCP("binance-trading")
 
-# ── Marktdaten (öffentlich) ────────────────────────────────────────────────
+# ── Market Data tools (public) ────────────────────────────────────────────────
 mcp.tool()(market_data.get_price)
 mcp.tool()(market_data.get_ticker)
 mcp.tool()(market_data.get_orderbook)
@@ -34,34 +31,34 @@ mcp.tool()(market_data.get_ohlcv)
 mcp.tool()(market_data.get_markets)
 mcp.tool()(market_data.search_symbols)
 
-# ── Account & Portfolio ────────────────────────────────────────────────────
+# ── Account tools ─────────────────────────────────────────────────────────────
 mcp.tool()(account.get_balance)
 mcp.tool()(account.get_open_orders)
 mcp.tool()(account.get_order_history)
 mcp.tool()(account.get_positions)
 mcp.tool()(account.get_pnl_summary)
 
-# ── Spot Trading ───────────────────────────────────────────────────────────
+# ── Spot trading tools ────────────────────────────────────────────────────────
 mcp.tool()(spot.place_spot_order)
 mcp.tool()(spot.cancel_spot_order)
 mcp.tool()(spot.cancel_all_spot_orders)
 
-# ── USD-M Futures Trading ──────────────────────────────────────────────────
+# ── Futures trading tools ─────────────────────────────────────────────────────
 mcp.tool()(futures.place_futures_order)
 mcp.tool()(futures.cancel_futures_order)
 mcp.tool()(futures.set_leverage)
 mcp.tool()(futures.set_margin_mode)
 mcp.tool()(futures.close_position)
 
-# ── Options Trading ────────────────────────────────────────────────────────
+# ── Options trading tools ─────────────────────────────────────────────────────
 mcp.tool()(options.get_option_chain)
 mcp.tool()(options.place_options_order)
 mcp.tool()(options.cancel_options_order)
 
 
 def main() -> None:
-    """Startet den MCP Server im stdio-Modus."""
-    logger.info("Binance MCP Server wird gestartet (stdio)…")
+    """Start the MCP server on stdio transport."""
+    logger.info("Binance MCP Server starting (stdio transport)…")
     mcp.run(transport="stdio")
 
 

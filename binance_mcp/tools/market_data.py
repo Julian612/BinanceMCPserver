@@ -1,244 +1,215 @@
 """
-Öffentliche Marktdaten-Tools für den Binance MCP Server.
+Public market data tools – no API key required.
 
-Alle Funktionen greifen ausschliesslich auf öffentliche Endpoints zu
-und benötigen keine API-Authentifizierung.
+All functions use the spot exchange by default for public endpoints;
+market_type parameter allows switching to futures/options where applicable.
 """
 
 from __future__ import annotations
 
-import logging
-import sys
-from typing import Any
-
 import ccxt
-
 from binance_mcp.client import futures_client, options_client, spot_client
-from binance_mcp.utils.formatting import (
-    format_error,
-    format_market,
-    format_ohlcv,
-    format_orderbook,
-    format_ticker,
-)
-
-logger = logging.getLogger(__name__)
 
 
-async def get_price(symbol: str) -> dict[str, Any]:
-    """Gibt den aktuellen Marktpreis für ein Symbol zurück.
-
-    Ruft den letzten gehandelten Preis (last price) vom Spot-Markt ab.
-    Beispiel-Symbol: 'BTC/USDT', 'ETH/USDT'.
+async def get_price(symbol: str) -> dict:
+    """
+    Fetch the current last traded price for a symbol.
 
     Args:
-        symbol: Das Handelspaar im Format 'BASE/QUOTE' (z.B. 'BTC/USDT').
+        symbol: Trading pair in ccxt format, e.g. 'BTC/USDT'.
 
     Returns:
-        Dict mit 'symbol', 'price' und 'timestamp'.
+        Dict with keys 'symbol' and 'price', or 'error'/'type' on failure.
     """
     try:
         async with spot_client() as exchange:
             ticker = await exchange.fetch_ticker(symbol)
+            return {"symbol": symbol, "price": ticker["last"]}
+    except ccxt.BaseError as e:
+        return {"error": str(e), "type": type(e).__name__}
+
+
+async def get_ticker(symbol: str) -> dict:
+    """
+    Fetch the full 24-hour ticker for a symbol.
+
+    Returns bid, ask, last price, 24h volume and percentage change.
+
+    Args:
+        symbol: Trading pair in ccxt format, e.g. 'BTC/USDT'.
+
+    Returns:
+        Dict with ticker fields, or 'error'/'type' on failure.
+    """
+    try:
+        async with spot_client() as exchange:
+            t = await exchange.fetch_ticker(symbol)
             return {
-                "symbol": ticker.get("symbol"),
-                "price": ticker.get("last"),
-                "timestamp": ticker.get("datetime"),
+                "symbol": t.get("symbol"),
+                "bid": t.get("bid"),
+                "ask": t.get("ask"),
+                "last": t.get("last"),
+                "open": t.get("open"),
+                "high": t.get("high"),
+                "low": t.get("low"),
+                "volume": t.get("baseVolume"),
+                "quote_volume": t.get("quoteVolume"),
+                "change": t.get("change"),
+                "percentage": t.get("percentage"),
+                "timestamp": t.get("timestamp"),
+                "datetime": t.get("datetime"),
             }
-    except ccxt.BadSymbol as exc:
-        return format_error(exc)
-    except ccxt.NetworkError as exc:
-        logger.error("Netzwerkfehler bei get_price(%s): %s", symbol, exc, file=sys.stderr)
-        return format_error(exc)
-    except Exception as exc:
-        logger.error("Fehler bei get_price(%s): %s", symbol, exc)
-        return format_error(exc)
+    except ccxt.BaseError as e:
+        return {"error": str(e), "type": type(e).__name__}
 
 
-async def get_ticker(symbol: str) -> dict[str, Any]:
-    """Gibt den vollständigen Ticker für ein Symbol zurück.
-
-    Enthält Bid/Ask, 24h-Volumen, Preis-Veränderung und weitere Marktdaten.
-    Beispiel-Symbol: 'BTC/USDT', 'ETH/BTC'.
+async def get_orderbook(symbol: str, limit: int = 20) -> dict:
+    """
+    Fetch the current order book for a symbol.
 
     Args:
-        symbol: Das Handelspaar im Format 'BASE/QUOTE' (z.B. 'BTC/USDT').
+        symbol: Trading pair in ccxt format, e.g. 'BTC/USDT'.
+        limit: Number of price levels to return per side (default 20).
 
     Returns:
-        Dict mit symbol, last, bid, ask, high, low, volume, change_24h,
-        change_pct_24h und timestamp.
+        Dict with 'bids' and 'asks' lists ([price, amount] pairs),
+        or 'error'/'type' on failure.
     """
     try:
         async with spot_client() as exchange:
-            raw = await exchange.fetch_ticker(symbol)
-            return format_ticker(raw)
-    except ccxt.BadSymbol as exc:
-        return format_error(exc)
-    except ccxt.NetworkError as exc:
-        logger.error("Netzwerkfehler bei get_ticker(%s): %s", symbol, exc)
-        return format_error(exc)
-    except Exception as exc:
-        logger.error("Fehler bei get_ticker(%s): %s", symbol, exc)
-        return format_error(exc)
-
-
-async def get_orderbook(symbol: str, limit: int = 20) -> dict[str, Any]:
-    """Gibt das aktuelle Order Book für ein Symbol zurück.
-
-    Liefert Bids (Kauforders) und Asks (Verkaufsorders) sortiert nach Preis.
-    Jeder Eintrag ist [price, amount].
-
-    Args:
-        symbol: Das Handelspaar im Format 'BASE/QUOTE' (z.B. 'BTC/USDT').
-        limit: Anzahl der Preislevels pro Seite (Standard: 20, max: 1000).
-
-    Returns:
-        Dict mit 'symbol', 'bids', 'asks', 'bid_count', 'ask_count' und
-        'timestamp'.
-    """
-    try:
-        async with spot_client() as exchange:
-            raw = await exchange.fetch_order_book(symbol, limit=limit)
-            return format_orderbook(raw, limit)
-    except ccxt.BadSymbol as exc:
-        return format_error(exc)
-    except ccxt.NetworkError as exc:
-        logger.error("Netzwerkfehler bei get_orderbook(%s): %s", symbol, exc)
-        return format_error(exc)
-    except Exception as exc:
-        logger.error("Fehler bei get_orderbook(%s): %s", symbol, exc)
-        return format_error(exc)
+            ob = await exchange.fetch_order_book(symbol, limit)
+            return {
+                "symbol": symbol,
+                "bids": ob["bids"],
+                "asks": ob["asks"],
+                "timestamp": ob.get("timestamp"),
+                "datetime": ob.get("datetime"),
+            }
+    except ccxt.BaseError as e:
+        return {"error": str(e), "type": type(e).__name__}
 
 
 async def get_ohlcv(
-    symbol: str, timeframe: str = "1h", limit: int = 100
-) -> dict[str, Any]:
-    """Gibt OHLCV-Candlestick-Daten für ein Symbol zurück.
-
-    Unterstützte Timeframes: 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h,
-    12h, 1d, 3d, 1w, 1M.
+    symbol: str,
+    timeframe: str = "1h",
+    limit: int = 100,
+) -> dict:
+    """
+    Fetch OHLCV (candlestick) data for a symbol.
 
     Args:
-        symbol: Das Handelspaar im Format 'BASE/QUOTE' (z.B. 'BTC/USDT').
-        timeframe: Kerzen-Intervall (Standard: '1h').
-        limit: Anzahl der Kerzen (Standard: 100, max: 1000).
+        symbol: Trading pair in ccxt format, e.g. 'BTC/USDT'.
+        timeframe: Candle interval, e.g. '1m', '5m', '1h', '1d' (default '1h').
+        limit: Number of candles to return (default 100, max 1000).
 
     Returns:
-        Dict mit 'symbol', 'timeframe', 'count' und 'candles'. Jede Kerze
-        enthält timestamp, open, high, low, close, volume.
+        Dict with 'candles' list of dicts (timestamp, open, high, low, close, volume),
+        or 'error'/'type' on failure.
     """
     try:
         async with spot_client() as exchange:
-            raw = await exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-            return format_ohlcv(raw, symbol, timeframe)
-    except ccxt.BadSymbol as exc:
-        return format_error(exc)
-    except ccxt.BadRequest as exc:
-        return format_error(exc)
-    except ccxt.NetworkError as exc:
-        logger.error("Netzwerkfehler bei get_ohlcv(%s): %s", symbol, exc)
-        return format_error(exc)
-    except Exception as exc:
-        logger.error("Fehler bei get_ohlcv(%s): %s", symbol, exc)
-        return format_error(exc)
-
-
-async def get_markets(market_type: str = "spot") -> dict[str, Any]:
-    """Gibt alle verfügbaren Märkte für den angegebenen Markttyp zurück.
-
-    Liefert eine Liste aktiver Märkte mit Handelspaar, Gebühren und
-    Präzisions-Informationen.
-
-    Args:
-        market_type: Markttyp – 'spot', 'future' oder 'option'.
-                     Standard: 'spot'.
-
-    Returns:
-        Dict mit 'market_type', 'count' und 'markets' (Liste von Markt-Dicts).
-    """
-    valid_types = ("spot", "future", "option")
-    if market_type not in valid_types:
-        return {
-            "error": f"Ungültiger market_type '{market_type}'. Erlaubt: {valid_types}",
-            "type": "ValueError",
-        }
-
-    client_ctx = (
-        spot_client()
-        if market_type == "spot"
-        else (futures_client() if market_type == "future" else options_client())
-    )
-
-    try:
-        async with client_ctx as exchange:
-            markets = await exchange.load_markets()
-            filtered = [
-                format_market(m)
-                for m in markets.values()
-                if m.get("active") and m.get("type") == market_type
+            raw = await exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+            candles = [
+                {
+                    "timestamp": c[0],
+                    "open": c[1],
+                    "high": c[2],
+                    "low": c[3],
+                    "close": c[4],
+                    "volume": c[5],
+                }
+                for c in raw
             ]
             return {
-                "market_type": market_type,
-                "count": len(filtered),
-                "markets": filtered,
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "candles": candles,
             }
-    except ccxt.NetworkError as exc:
-        logger.error("Netzwerkfehler bei get_markets(%s): %s", market_type, exc)
-        return format_error(exc)
-    except Exception as exc:
-        logger.error("Fehler bei get_markets(%s): %s", market_type, exc)
-        return format_error(exc)
+    except ccxt.BaseError as e:
+        return {"error": str(e), "type": type(e).__name__}
 
 
-async def search_symbols(query: str, market_type: str = "spot") -> dict[str, Any]:
-    """Sucht nach Handelssymbolen, die dem Suchbegriff entsprechen.
-
-    Die Suche ist case-insensitiv und prüft ob der query-String im
-    Symbol-Namen enthalten ist (z.B. 'BTC' findet 'BTC/USDT', 'BTC/BNB').
+async def get_markets(market_type: str = "spot") -> dict:
+    """
+    Fetch all available markets for a given market type.
 
     Args:
-        query: Suchbegriff (z.B. 'BTC', 'USDT', 'ETH').
-        market_type: Markttyp – 'spot', 'future' oder 'option'.
-                     Standard: 'spot'.
+        market_type: One of 'spot', 'future', 'option' (default 'spot').
 
     Returns:
-        Dict mit 'query', 'market_type', 'count' und 'symbols' (Liste von
-        Symbol-Strings).
+        Dict with 'markets' list of dicts (id, symbol, base, quote, active, type),
+        or 'error'/'type' on failure.
     """
-    valid_types = ("spot", "future", "option")
-    if market_type not in valid_types:
-        return {
-            "error": f"Ungültiger market_type '{market_type}'. Erlaubt: {valid_types}",
-            "type": "ValueError",
-        }
-
-    client_ctx = (
-        spot_client()
-        if market_type == "spot"
-        else (futures_client() if market_type == "future" else options_client())
-    )
+    _client_map = {
+        "spot": spot_client,
+        "future": futures_client,
+        "option": options_client,
+    }
+    client_fn = _client_map.get(market_type, spot_client)
 
     try:
-        async with client_ctx as exchange:
-            markets = await exchange.load_markets()
-            query_upper = query.upper()
-            matches = [
-                symbol
-                for symbol, market in markets.items()
-                if query_upper in symbol.upper()
-                and market.get("active")
-                and market.get("type") == market_type
+        async with client_fn() as exchange:
+            raw_markets = await exchange.load_markets()
+            markets = [
+                {
+                    "id": m.get("id"),
+                    "symbol": m.get("symbol"),
+                    "base": m.get("base"),
+                    "quote": m.get("quote"),
+                    "active": m.get("active"),
+                    "type": m.get("type"),
+                }
+                for m in raw_markets.values()
+                if m.get("active")
             ]
-            matches.sort()
+            return {"market_type": market_type, "count": len(markets), "markets": markets}
+    except ccxt.BaseError as e:
+        return {"error": str(e), "type": type(e).__name__}
+
+
+async def search_symbols(query: str, market_type: str = "spot") -> dict:
+    """
+    Search for symbols matching a query string.
+
+    Case-insensitive search against symbol IDs and names.
+
+    Args:
+        query: Search string, e.g. 'BTC' or 'USDT'.
+        market_type: One of 'spot', 'future', 'option' (default 'spot').
+
+    Returns:
+        Dict with 'results' list of matching symbols,
+        or 'error'/'type' on failure.
+    """
+    _client_map = {
+        "spot": spot_client,
+        "future": futures_client,
+        "option": options_client,
+    }
+    client_fn = _client_map.get(market_type, spot_client)
+    q = query.upper()
+
+    try:
+        async with client_fn() as exchange:
+            raw_markets = await exchange.load_markets()
+            results = [
+                {
+                    "symbol": m.get("symbol"),
+                    "base": m.get("base"),
+                    "quote": m.get("quote"),
+                    "type": m.get("type"),
+                    "active": m.get("active"),
+                }
+                for m in raw_markets.values()
+                if q in (m.get("symbol") or "").upper()
+                or q in (m.get("base") or "").upper()
+                or q in (m.get("quote") or "").upper()
+            ]
             return {
                 "query": query,
                 "market_type": market_type,
-                "count": len(matches),
-                "symbols": matches,
+                "count": len(results),
+                "results": results,
             }
-    except ccxt.NetworkError as exc:
-        logger.error("Netzwerkfehler bei search_symbols(%s): %s", query, exc)
-        return format_error(exc)
-    except Exception as exc:
-        logger.error("Fehler bei search_symbols(%s): %s", query, exc)
-        return format_error(exc)
+    except ccxt.BaseError as e:
+        return {"error": str(e), "type": type(e).__name__}
