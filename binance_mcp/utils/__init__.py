@@ -1,1 +1,1 @@
-"""Utility-Module für den Binance MCP Server."""
+"""Utility helpers for the Binance MCP Server."""

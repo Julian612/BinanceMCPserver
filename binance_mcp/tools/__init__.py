@@ -1,1 +1,1 @@
-"""Tool-Module für den Binance MCP Server."""
+"""Trading tool modules for the Binance MCP Server."""

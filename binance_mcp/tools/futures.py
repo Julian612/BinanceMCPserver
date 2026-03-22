@@ -1,24 +1,14 @@
 """
-USD-M Futures Trading Tools für den Binance MCP Server.
-
-Alle Funktionen erfordern gültige API-Credentials mit Futures-Trading-
-Berechtigung. Futures-Symbole haben das Format 'BTC/USDT:USDT'.
-
-WARNUNG: Futures-Trading beinhaltet Hebel-Risiken. Im Testnet-Modus
-(BINANCE_TESTNET=true) werden Orders nur simuliert.
+USD-M Futures trading tools – API key required for all functions.
 """
 
 from __future__ import annotations
 
-import logging
-from typing import Any
-
 import ccxt
+from binance_mcp.client import futures_client, has_credentials
+from binance_mcp.utils.formatting import fmt_order, fmt_position
 
-from binance_mcp.client import futures_client
-from binance_mcp.utils.formatting import format_error, format_order, format_position
-
-logger = logging.getLogger(__name__)
+_NO_CREDS = {"error": "API credentials not configured.", "type": "AuthenticationError"}
 
 
 async def place_futures_order(
@@ -28,246 +18,179 @@ async def place_futures_order(
     amount: float,
     price: float | None = None,
     reduce_only: bool = False,
-) -> dict[str, Any]:
-    """Platziert eine Order auf dem USD-M Futures-Markt.
-
-    Für Limit-Orders muss ein Preis angegeben werden. Mit reduce_only=True
-    wird die Order nur ausgeführt, wenn sie eine bestehende Position reduziert.
-    Futures-Symbole haben das Format 'BTC/USDT:USDT'.
+) -> dict:
+    """
+    Place a USD-M futures order.
 
     Args:
-        symbol: Futures-Symbol (z.B. 'BTC/USDT:USDT', 'ETH/USDT:USDT').
-        side: Orderrichtung – 'buy' oder 'sell'.
-        order_type: Order-Typ – 'market' oder 'limit'.
-        amount: Kontraktmenge in der Basis-Währung (z.B. 0.001 BTC).
-        price: Limit-Preis (nur für order_type='limit' erforderlich).
-        reduce_only: True = Order schliesst/reduziert nur bestehende Positionen.
-                     Standard: False.
+        symbol: Trading pair, e.g. 'BTC/USDT'.
+        side: 'buy' or 'sell'.
+        order_type: 'market' or 'limit'.
+        amount: Order quantity in base asset (contracts).
+        price: Limit price (required for limit orders).
+        reduce_only: If True, the order can only reduce an existing position.
 
     Returns:
-        Dict mit Order-Details oder Fehler-Dict bei Misserfolg.
+        Normalised order dict, or 'error'/'type' on failure.
     """
+    if not has_credentials():
+        return _NO_CREDS
+
     side = side.lower()
     order_type = order_type.lower()
 
     if side not in ("buy", "sell"):
-        return {"error": f"Ungültige side '{side}'. Erlaubt: buy, sell", "type": "ValueError"}
+        return {"error": f"Invalid side '{side}'. Must be 'buy' or 'sell'.", "type": "ValueError"}
     if order_type not in ("market", "limit"):
-        return {
-            "error": f"Ungültiger order_type '{order_type}'. Erlaubt: market, limit",
-            "type": "ValueError",
-        }
+        return {"error": f"Invalid order_type '{order_type}'. Must be 'market' or 'limit'.", "type": "ValueError"}
     if order_type == "limit" and price is None:
-        return {"error": "Für Limit-Orders muss ein Preis angegeben werden.", "type": "ValueError"}
+        return {"error": "Price is required for limit orders.", "type": "ValueError"}
 
-    params: dict[str, Any] = {}
+    params: dict = {}
     if reduce_only:
         params["reduceOnly"] = True
 
     try:
         async with futures_client() as exchange:
             raw = await exchange.create_order(
-                symbol=symbol,
-                type=order_type,
-                side=side,
-                amount=amount,
-                price=price,
-                params=params,
+                symbol, order_type, side, amount, price, params
             )
-            return format_order(raw)
-    except ccxt.AuthenticationError as exc:
-        return format_error(exc)
-    except ccxt.InsufficientFunds as exc:
-        return format_error(exc)
-    except ccxt.InvalidOrder as exc:
-        return format_error(exc)
-    except ccxt.BadSymbol as exc:
-        return format_error(exc)
-    except ccxt.NetworkError as exc:
-        logger.error("Netzwerkfehler bei place_futures_order(%s): %s", symbol, exc)
-        return format_error(exc)
-    except Exception as exc:
-        logger.error("Fehler bei place_futures_order(%s): %s", symbol, exc)
-        return format_error(exc)
+            return fmt_order(raw)
+    except ccxt.BaseError as e:
+        return {"error": str(e), "type": type(e).__name__}
 
 
-async def cancel_futures_order(symbol: str, order_id: str) -> dict[str, Any]:
-    """Storniert eine offene Futures-Order anhand ihrer ID.
-
-    Nur Orders mit Status 'open' können storniert werden.
+async def cancel_futures_order(symbol: str, order_id: str) -> dict:
+    """
+    Cancel an open futures order by ID.
 
     Args:
-        symbol: Futures-Symbol der Order (z.B. 'BTC/USDT:USDT').
-        order_id: Die eindeutige Order-ID.
+        symbol: Trading pair, e.g. 'BTC/USDT'.
+        order_id: The order ID string as returned by place_futures_order.
 
     Returns:
-        Dict mit Stornierungsdetails oder Fehler-Dict bei Misserfolg.
+        Cancellation confirmation dict, or 'error'/'type' on failure.
     """
+    if not has_credentials():
+        return _NO_CREDS
+
     try:
         async with futures_client() as exchange:
-            raw = await exchange.cancel_order(id=order_id, symbol=symbol)
-            return format_order(raw)
-    except ccxt.AuthenticationError as exc:
-        return format_error(exc)
-    except ccxt.OrderNotFound as exc:
-        return format_error(exc)
-    except ccxt.BadSymbol as exc:
-        return format_error(exc)
-    except ccxt.NetworkError as exc:
-        logger.error(
-            "Netzwerkfehler bei cancel_futures_order(%s, %s): %s", symbol, order_id, exc
-        )
-        return format_error(exc)
-    except Exception as exc:
-        logger.error("Fehler bei cancel_futures_order(%s, %s): %s", symbol, order_id, exc)
-        return format_error(exc)
+            raw = await exchange.cancel_order(order_id, symbol)
+            return {
+                "cancelled": True,
+                "order_id": raw.get("id"),
+                "symbol": raw.get("symbol"),
+                "status": raw.get("status"),
+            }
+    except ccxt.BaseError as e:
+        return {"error": str(e), "type": type(e).__name__}
 
 
-async def set_leverage(symbol: str, leverage: int) -> dict[str, Any]:
-    """Setzt den Hebel für ein Futures-Symbol.
-
-    Der Hebel gilt für alle neuen Orders auf diesem Symbol. Binance
-    erlaubt Leverage-Werte von 1 bis 125, abhängig vom Symbol.
+async def set_leverage(symbol: str, leverage: int) -> dict:
+    """
+    Set the leverage multiplier for a futures symbol.
 
     Args:
-        symbol: Futures-Symbol (z.B. 'BTC/USDT:USDT').
-        leverage: Gewünschter Hebel (1–125).
+        symbol: Trading pair, e.g. 'BTC/USDT'.
+        leverage: Leverage value between 1 and 125.
 
     Returns:
-        Dict mit 'symbol', 'leverage' und Bestätigungsdetails oder
-        Fehler-Dict bei Misserfolg.
+        Dict confirming the new leverage setting, or 'error'/'type' on failure.
     """
+    if not has_credentials():
+        return _NO_CREDS
+
     if not 1 <= leverage <= 125:
         return {
-            "error": f"Leverage {leverage} ausserhalb des erlaubten Bereichs (1–125).",
+            "error": f"Leverage must be between 1 and 125, got {leverage}.",
             "type": "ValueError",
         }
 
     try:
         async with futures_client() as exchange:
-            result = await exchange.set_leverage(leverage=leverage, symbol=symbol)
+            result = await exchange.set_leverage(leverage, symbol)
             return {
                 "symbol": symbol,
                 "leverage": leverage,
-                "result": result,
+                "raw": result,
             }
-    except ccxt.AuthenticationError as exc:
-        return format_error(exc)
-    except ccxt.BadSymbol as exc:
-        return format_error(exc)
-    except ccxt.InvalidOrder as exc:
-        return format_error(exc)
-    except ccxt.NetworkError as exc:
-        logger.error("Netzwerkfehler bei set_leverage(%s, %d): %s", symbol, leverage, exc)
-        return format_error(exc)
-    except Exception as exc:
-        logger.error("Fehler bei set_leverage(%s, %d): %s", symbol, leverage, exc)
-        return format_error(exc)
+    except ccxt.BaseError as e:
+        return {"error": str(e), "type": type(e).__name__}
 
 
-async def set_margin_mode(symbol: str, mode: str) -> dict[str, Any]:
-    """Setzt den Margin-Modus für ein Futures-Symbol.
-
-    'isolated': Jede Position hat eine separate Margin-Allokation.
-    'cross': Alle Positionen teilen sich die verfügbare Margin.
-
-    HINWEIS: Der Margin-Modus kann nur geändert werden, wenn keine
-    offene Position oder Order für das Symbol existiert.
+async def set_margin_mode(symbol: str, mode: str) -> dict:
+    """
+    Set the margin mode for a futures symbol.
 
     Args:
-        symbol: Futures-Symbol (z.B. 'BTC/USDT:USDT').
-        mode: Margin-Modus – 'isolated' oder 'cross'.
+        symbol: Trading pair, e.g. 'BTC/USDT'.
+        mode: 'isolated' or 'cross'.
 
     Returns:
-        Dict mit 'symbol', 'mode' und Bestätigungsdetails oder
-        Fehler-Dict bei Misserfolg.
+        Dict confirming the margin mode change, or 'error'/'type' on failure.
     """
+    if not has_credentials():
+        return _NO_CREDS
+
     mode = mode.lower()
     if mode not in ("isolated", "cross"):
         return {
-            "error": f"Ungültiger Margin-Modus '{mode}'. Erlaubt: isolated, cross",
+            "error": f"Invalid mode '{mode}'. Must be 'isolated' or 'cross'.",
             "type": "ValueError",
         }
 
     try:
         async with futures_client() as exchange:
-            result = await exchange.set_margin_mode(marginMode=mode, symbol=symbol)
+            result = await exchange.set_margin_mode(mode, symbol)
             return {
                 "symbol": symbol,
-                "mode": mode,
-                "result": result,
+                "margin_mode": mode,
+                "raw": result,
             }
-    except ccxt.AuthenticationError as exc:
-        return format_error(exc)
-    except ccxt.BadSymbol as exc:
-        return format_error(exc)
-    except ccxt.NetworkError as exc:
-        logger.error("Netzwerkfehler bei set_margin_mode(%s, %s): %s", symbol, mode, exc)
-        return format_error(exc)
-    except Exception as exc:
-        logger.error("Fehler bei set_margin_mode(%s, %s): %s", symbol, mode, exc)
-        return format_error(exc)
+    except ccxt.BaseError as e:
+        return {"error": str(e), "type": type(e).__name__}
 
 
-async def close_position(
-    symbol: str, amount: float | None = None
-) -> dict[str, Any]:
-    """Schliesst eine offene Futures-Position ganz oder teilweise.
+async def close_position(symbol: str, amount: float | None = None) -> dict:
+    """
+    Close an open futures position for a symbol.
 
-    Ohne amount-Angabe wird die gesamte Position zum Marktpreis geschlossen.
-    Mit amount wird nur der angegebene Anteil geschlossen (Teilschliessung).
+    If amount is None, the entire position is closed.
+    Uses a reduce_only market order on the opposite side.
 
     Args:
-        symbol: Futures-Symbol (z.B. 'BTC/USDT:USDT').
-        amount: Optional – Zu schliessende Kontraktmenge. None = vollständig.
+        symbol: Trading pair, e.g. 'BTC/USDT'.
+        amount: Quantity to close. If None, closes the full position.
 
     Returns:
-        Dict mit Order-Details der Schliessungsorder oder Fehler-Dict.
+        Normalised order dict of the closing order, or 'error'/'type' on failure.
     """
+    if not has_credentials():
+        return _NO_CREDS
+
     try:
         async with futures_client() as exchange:
-            # Aktuelle Position abrufen
-            positions = await exchange.fetch_positions(symbols=[symbol])
+            positions = await exchange.fetch_positions([symbol])
             open_pos = [
-                p for p in positions if p.get("contracts") and float(p.get("contracts", 0)) != 0
+                p for p in positions if float(p.get("contracts") or 0) != 0
             ]
-
             if not open_pos:
-                return {
-                    "error": f"Keine offene Position für Symbol '{symbol}' gefunden.",
-                    "type": "PositionNotFound",
-                }
+                return {"error": f"No open position found for {symbol}.", "type": "ValueError"}
 
-            position = open_pos[0]
-            pos_side = position.get("side")
-            pos_contracts = abs(float(position.get("contracts", 0)))
-
-            # Gegenseitige Seite für Schliessung
+            pos = open_pos[0]
+            pos_side = pos.get("side", "long")
             close_side = "sell" if pos_side == "long" else "buy"
-            close_amount = amount if amount is not None else pos_contracts
+            close_amount = amount if amount is not None else abs(float(pos.get("contracts") or 0))
 
             raw = await exchange.create_order(
-                symbol=symbol,
-                type="market",
-                side=close_side,
-                amount=close_amount,
-                params={"reduceOnly": True},
+                symbol,
+                "market",
+                close_side,
+                close_amount,
+                None,
+                {"reduceOnly": True},
             )
-            result = format_order(raw)
-            result["closed_position_side"] = pos_side
-            result["original_contracts"] = pos_contracts
-            return result
-    except ccxt.AuthenticationError as exc:
-        return format_error(exc)
-    except ccxt.InsufficientFunds as exc:
-        return format_error(exc)
-    except ccxt.InvalidOrder as exc:
-        return format_error(exc)
-    except ccxt.BadSymbol as exc:
-        return format_error(exc)
-    except ccxt.NetworkError as exc:
-        logger.error("Netzwerkfehler bei close_position(%s): %s", symbol, exc)
-        return format_error(exc)
-    except Exception as exc:
-        logger.error("Fehler bei close_position(%s): %s", symbol, exc)
-        return format_error(exc)
+            return fmt_order(raw)
+    except ccxt.BaseError as e:
+        return {"error": str(e), "type": type(e).__name__}

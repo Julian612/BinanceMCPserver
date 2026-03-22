@@ -1,25 +1,26 @@
 [Unit]
 Description=Binance MCP Server
+Documentation=https://github.com/Julian612/BinanceMCPserver
 After=network.target
 
 [Service]
 Type=simple
 User=mcpuser
+Group=mcpuser
 WorkingDirectory=/opt/binance-mcp
 EnvironmentFile=/opt/binance-mcp/.env
-ExecStart=/opt/binance-mcp/.venv/bin/python server.py
+ExecStart=/opt/binance-mcp/.venv/bin/python /opt/binance-mcp/server.py
 Restart=on-failure
 RestartSec=5
-StandardOutput=journal
-StandardError=journal
-
-# Sicherheitshärtung
+# Hardening
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/opt/binance-mcp
-ReadWritePaths=/var/log
+ReadWritePaths=/opt/binance-mcp /var/log
+# Logging – all output captured by journald (stdout is MCP protocol, stderr is logs)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=binance-mcp
 
 [Install]
 WantedBy=multi-user.target

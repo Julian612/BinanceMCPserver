@@ -1,83 +1,58 @@
 """
-Options Trading Tools für den Binance MCP Server.
-
-Binance European-Style Options werden über den 'option' defaultType
-angesprochen. Symbols haben das Format 'BTC/USDT:BTC-YYYYMMDD-STRIKE-C/P'
-(z.B. 'BTC/USDT:BTC-241227-100000-C' für eine BTC Call-Option).
-
-Alle Funktionen erfordern gültige API-Credentials mit Options-Trading-
-Berechtigung. Im Testnet-Modus werden Orders nur simuliert.
+Options trading tools – API key required for authenticated functions.
+get_option_chain is public (no auth needed).
 """
 
 from __future__ import annotations
 
-import logging
-from typing import Any
-
 import ccxt
+from binance_mcp.client import has_credentials, options_client
+from binance_mcp.utils.formatting import fmt_order
 
-from binance_mcp.client import options_client
-from binance_mcp.utils.formatting import format_error, format_market, format_order
-
-logger = logging.getLogger(__name__)
+_NO_CREDS = {"error": "API credentials not configured.", "type": "AuthenticationError"}
 
 
-async def get_option_chain(underlying: str) -> dict[str, Any]:
-    """Gibt alle verfügbaren Options-Kontrakte für ein Underlying zurück.
-
-    Listet alle aktiven Call- und Put-Optionen auf, gruppiert nach
-    Verfallsdatum. Underlying ist die Basis-Währung (z.B. 'BTC', 'ETH').
+async def get_option_chain(underlying: str) -> dict:
+    """
+    Fetch all available option contracts for an underlying asset.
 
     Args:
-        underlying: Basis-Währung des Underlyings (z.B. 'BTC', 'ETH').
-                    Gross-/Kleinschreibung wird ignoriert.
+        underlying: Base asset symbol, e.g. 'BTC' or 'ETH'.
 
     Returns:
-        Dict mit 'underlying', 'count', 'calls' und 'puts' (jeweils
-        Listen von Markt-Dicts mit Strike, Expiry und Typ).
+        Dict with 'contracts' list of available option symbols, grouped by expiry,
+        or 'error'/'type' on failure.
     """
-    underlying_upper = underlying.upper()
+    underlying = underlying.upper()
 
     try:
         async with options_client() as exchange:
             markets = await exchange.load_markets()
+            contracts = [
+                {
+                    "symbol": m.get("symbol"),
+                    "id": m.get("id"),
+                    "base": m.get("base"),
+                    "quote": m.get("quote"),
+                    "expiry": m.get("expiry"),
+                    "strike": m.get("strike"),
+                    "option_type": m.get("optionType"),
+                    "active": m.get("active"),
+                }
+                for m in markets.values()
+                if (m.get("base") or "").upper() == underlying
+                and m.get("type") == "option"
+            ]
 
-            calls = []
-            puts = []
-
-            for symbol, market in markets.items():
-                if not market.get("active"):
-                    continue
-                if market.get("type") != "option":
-                    continue
-                base = (market.get("base") or "").upper()
-                if base != underlying_upper:
-                    continue
-
-                formatted = format_market(market)
-                if market.get("optionType") == "call":
-                    calls.append(formatted)
-                elif market.get("optionType") == "put":
-                    puts.append(formatted)
-
-            # Nach Strike-Preis sortieren
-            calls.sort(key=lambda m: (m.get("expiry") or "", m.get("strike") or 0))
-            puts.sort(key=lambda m: (m.get("expiry") or "", m.get("strike") or 0))
+            contracts.sort(key=lambda x: (x.get("expiry") or "", x.get("strike") or 0))
 
             return {
-                "underlying": underlying_upper,
-                "count": len(calls) + len(puts),
-                "calls_count": len(calls),
-                "puts_count": len(puts),
-                "calls": calls,
-                "puts": puts,
+                "underlying": underlying,
+                "count": len(contracts),
+                "contracts": contracts,
             }
-    except ccxt.NetworkError as exc:
-        logger.error("Netzwerkfehler bei get_option_chain(%s): %s", underlying, exc)
-        return format_error(exc)
-    except Exception as exc:
-        logger.error("Fehler bei get_option_chain(%s): %s", underlying, exc)
-        return format_error(exc)
+    except ccxt.BaseError as e:
+        return {"error": str(e), "type": type(e).__name__}
 
 
 async def place_options_order(
@@ -86,90 +61,63 @@ async def place_options_order(
     order_type: str,
     amount: float,
     price: float | None = None,
-) -> dict[str, Any]:
-    """Platziert eine Order auf dem Options-Markt.
-
-    Optionen können nur gekauft (buy) oder verkauft (sell) werden.
-    Das Options-Symbol enthält Verfallsdatum, Strike und Typ:
-    z.B. 'BTC/USDT:BTC-241227-100000-C' (BTC Call, Strike 100000, Verfall 27.12.2024).
+) -> dict:
+    """
+    Place an options order (buy or sell a contract).
 
     Args:
-        symbol: Options-Symbol im Binance-Format.
-        side: Orderrichtung – 'buy' oder 'sell'.
-        order_type: Order-Typ – 'market' oder 'limit'.
-        amount: Kontraktmenge.
-        price: Limit-Preis in der Quote-Währung (nur für order_type='limit').
+        symbol: Full option symbol, e.g. 'BTC/USDT-240329-70000-C'.
+        side: 'buy' or 'sell'.
+        order_type: 'market' or 'limit'.
+        amount: Number of contracts.
+        price: Limit price per contract (required for limit orders).
 
     Returns:
-        Dict mit Order-Details oder Fehler-Dict bei Misserfolg.
+        Normalised order dict, or 'error'/'type' on failure.
     """
+    if not has_credentials():
+        return _NO_CREDS
+
     side = side.lower()
     order_type = order_type.lower()
 
     if side not in ("buy", "sell"):
-        return {"error": f"Ungültige side '{side}'. Erlaubt: buy, sell", "type": "ValueError"}
+        return {"error": f"Invalid side '{side}'. Must be 'buy' or 'sell'.", "type": "ValueError"}
     if order_type not in ("market", "limit"):
-        return {
-            "error": f"Ungültiger order_type '{order_type}'. Erlaubt: market, limit",
-            "type": "ValueError",
-        }
+        return {"error": f"Invalid order_type '{order_type}'. Must be 'market' or 'limit'.", "type": "ValueError"}
     if order_type == "limit" and price is None:
-        return {"error": "Für Limit-Orders muss ein Preis angegeben werden.", "type": "ValueError"}
+        return {"error": "Price is required for limit orders.", "type": "ValueError"}
 
     try:
         async with options_client() as exchange:
-            raw = await exchange.create_order(
-                symbol=symbol,
-                type=order_type,
-                side=side,
-                amount=amount,
-                price=price,
-            )
-            return format_order(raw)
-    except ccxt.AuthenticationError as exc:
-        return format_error(exc)
-    except ccxt.InsufficientFunds as exc:
-        return format_error(exc)
-    except ccxt.InvalidOrder as exc:
-        return format_error(exc)
-    except ccxt.BadSymbol as exc:
-        return format_error(exc)
-    except ccxt.NetworkError as exc:
-        logger.error("Netzwerkfehler bei place_options_order(%s): %s", symbol, exc)
-        return format_error(exc)
-    except Exception as exc:
-        logger.error("Fehler bei place_options_order(%s): %s", symbol, exc)
-        return format_error(exc)
+            raw = await exchange.create_order(symbol, order_type, side, amount, price)
+            return fmt_order(raw)
+    except ccxt.BaseError as e:
+        return {"error": str(e), "type": type(e).__name__}
 
 
-async def cancel_options_order(symbol: str, order_id: str) -> dict[str, Any]:
-    """Storniert eine offene Options-Order anhand ihrer ID.
-
-    Nur Orders mit Status 'open' können storniert werden. Verfallene
-    oder bereits ausgeführte Options-Orders können nicht storniert werden.
+async def cancel_options_order(symbol: str, order_id: str) -> dict:
+    """
+    Cancel an open options order by ID.
 
     Args:
-        symbol: Options-Symbol der Order (z.B. 'BTC/USDT:BTC-241227-100000-C').
-        order_id: Die eindeutige Order-ID.
+        symbol: Full option symbol, e.g. 'BTC/USDT-240329-70000-C'.
+        order_id: The order ID string as returned by place_options_order.
 
     Returns:
-        Dict mit Stornierungsdetails oder Fehler-Dict bei Misserfolg.
+        Cancellation confirmation dict, or 'error'/'type' on failure.
     """
+    if not has_credentials():
+        return _NO_CREDS
+
     try:
         async with options_client() as exchange:
-            raw = await exchange.cancel_order(id=order_id, symbol=symbol)
-            return format_order(raw)
-    except ccxt.AuthenticationError as exc:
-        return format_error(exc)
-    except ccxt.OrderNotFound as exc:
-        return format_error(exc)
-    except ccxt.BadSymbol as exc:
-        return format_error(exc)
-    except ccxt.NetworkError as exc:
-        logger.error(
-            "Netzwerkfehler bei cancel_options_order(%s, %s): %s", symbol, order_id, exc
-        )
-        return format_error(exc)
-    except Exception as exc:
-        logger.error("Fehler bei cancel_options_order(%s, %s): %s", symbol, order_id, exc)
-        return format_error(exc)
+            raw = await exchange.cancel_order(order_id, symbol)
+            return {
+                "cancelled": True,
+                "order_id": raw.get("id"),
+                "symbol": raw.get("symbol"),
+                "status": raw.get("status"),
+            }
+    except ccxt.BaseError as e:
+        return {"error": str(e), "type": type(e).__name__}

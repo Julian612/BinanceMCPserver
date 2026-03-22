@@ -1,24 +1,14 @@
 """
-Spot Trading Tools für den Binance MCP Server.
-
-Alle Funktionen erfordern gültige API-Credentials mit Trading-Berechtigung.
-Orders werden direkt auf dem Binance Spot-Markt platziert.
-
-WARNUNG: Diese Tools führen echte Trades aus. Im Testnet-Modus
-(BINANCE_TESTNET=true) werden Orders nur simuliert.
+Spot trading tools – API key required for all functions.
 """
 
 from __future__ import annotations
 
-import logging
-from typing import Any
-
 import ccxt
+from binance_mcp.client import has_credentials, spot_client
+from binance_mcp.utils.formatting import fmt_order
 
-from binance_mcp.client import spot_client
-from binance_mcp.utils.formatting import format_error, format_order
-
-logger = logging.getLogger(__name__)
+_NO_CREDS = {"error": "API credentials not configured.", "type": "AuthenticationError"}
 
 
 async def place_spot_order(
@@ -27,150 +17,104 @@ async def place_spot_order(
     order_type: str,
     amount: float,
     price: float | None = None,
-) -> dict[str, Any]:
-    """Platziert eine Order auf dem Spot-Markt.
-
-    Für Limit-Orders muss ein Preis angegeben werden. Market-Orders
-    werden sofort zum aktuellen Marktpreis ausgeführt.
+) -> dict:
+    """
+    Place a spot market or limit order.
 
     Args:
-        symbol: Handelspaar (z.B. 'BTC/USDT').
-        side: Orderrichtung – 'buy' oder 'sell'.
-        order_type: Order-Typ – 'market' oder 'limit'.
-        amount: Menge in der Basis-Währung (z.B. 0.001 für 0.001 BTC).
-        price: Limit-Preis (nur für order_type='limit' erforderlich).
+        symbol: Trading pair, e.g. 'BTC/USDT'.
+        side: 'buy' or 'sell'.
+        order_type: 'market' or 'limit'.
+        amount: Order quantity in base asset.
+        price: Limit price (required for limit orders, ignored for market orders).
 
     Returns:
-        Dict mit Order-Details (id, symbol, type, side, status, price,
-        amount, filled) oder Fehler-Dict bei Misserfolg.
+        Normalised order dict, or 'error'/'type' on failure.
     """
+    if not has_credentials():
+        return _NO_CREDS
+
     side = side.lower()
     order_type = order_type.lower()
 
     if side not in ("buy", "sell"):
-        return {"error": f"Ungültige side '{side}'. Erlaubt: buy, sell", "type": "ValueError"}
+        return {"error": f"Invalid side '{side}'. Must be 'buy' or 'sell'.", "type": "ValueError"}
     if order_type not in ("market", "limit"):
-        return {
-            "error": f"Ungültiger order_type '{order_type}'. Erlaubt: market, limit",
-            "type": "ValueError",
-        }
+        return {"error": f"Invalid order_type '{order_type}'. Must be 'market' or 'limit'.", "type": "ValueError"}
     if order_type == "limit" and price is None:
-        return {"error": "Für Limit-Orders muss ein Preis angegeben werden.", "type": "ValueError"}
+        return {"error": "Price is required for limit orders.", "type": "ValueError"}
 
     try:
         async with spot_client() as exchange:
             raw = await exchange.create_order(
-                symbol=symbol,
-                type=order_type,
-                side=side,
-                amount=amount,
-                price=price,
+                symbol, order_type, side, amount, price
             )
-            return format_order(raw)
-    except ccxt.AuthenticationError as exc:
-        return format_error(exc)
-    except ccxt.InsufficientFunds as exc:
-        return format_error(exc)
-    except ccxt.InvalidOrder as exc:
-        return format_error(exc)
-    except ccxt.BadSymbol as exc:
-        return format_error(exc)
-    except ccxt.NetworkError as exc:
-        logger.error("Netzwerkfehler bei place_spot_order(%s): %s", symbol, exc)
-        return format_error(exc)
-    except Exception as exc:
-        logger.error("Fehler bei place_spot_order(%s): %s", symbol, exc)
-        return format_error(exc)
+            return fmt_order(raw)
+    except ccxt.BaseError as e:
+        return {"error": str(e), "type": type(e).__name__}
 
 
-async def cancel_spot_order(symbol: str, order_id: str) -> dict[str, Any]:
-    """Storniert eine offene Spot-Order anhand ihrer ID.
-
-    Nur Orders mit Status 'open' können storniert werden. Bereits
-    ausgeführte oder stornierte Orders können nicht erneut storniert werden.
+async def cancel_spot_order(symbol: str, order_id: str) -> dict:
+    """
+    Cancel an open spot order by ID.
 
     Args:
-        symbol: Handelspaar der Order (z.B. 'BTC/USDT').
-        order_id: Die eindeutige Order-ID (wird beim Platzieren zurückgegeben).
+        symbol: Trading pair, e.g. 'BTC/USDT'.
+        order_id: The order ID string as returned by place_spot_order or get_open_orders.
 
     Returns:
-        Dict mit Stornierungsdetails oder Fehler-Dict bei Misserfolg.
+        Cancellation confirmation dict, or 'error'/'type' on failure.
     """
+    if not has_credentials():
+        return _NO_CREDS
+
     try:
         async with spot_client() as exchange:
-            raw = await exchange.cancel_order(id=order_id, symbol=symbol)
-            return format_order(raw)
-    except ccxt.AuthenticationError as exc:
-        return format_error(exc)
-    except ccxt.OrderNotFound as exc:
-        return format_error(exc)
-    except ccxt.BadSymbol as exc:
-        return format_error(exc)
-    except ccxt.NetworkError as exc:
-        logger.error("Netzwerkfehler bei cancel_spot_order(%s, %s): %s", symbol, order_id, exc)
-        return format_error(exc)
-    except Exception as exc:
-        logger.error("Fehler bei cancel_spot_order(%s, %s): %s", symbol, order_id, exc)
-        return format_error(exc)
+            raw = await exchange.cancel_order(order_id, symbol)
+            return {
+                "cancelled": True,
+                "order_id": raw.get("id"),
+                "symbol": raw.get("symbol"),
+                "status": raw.get("status"),
+            }
+    except ccxt.BaseError as e:
+        return {"error": str(e), "type": type(e).__name__}
 
 
-async def cancel_all_spot_orders(symbol: str | None = None) -> dict[str, Any]:
-    """Storniert alle offenen Spot-Orders, optional gefiltert nach Symbol.
-
-    Ohne Symbol-Angabe werden alle offenen Orders auf dem Spot-Markt
-    storniert. Mit Symbol wird nur dieses Handelspaar berücksichtigt.
+async def cancel_all_spot_orders(symbol: str | None = None) -> dict:
+    """
+    Cancel all open spot orders, optionally filtered to a single symbol.
 
     Args:
-        symbol: Optional – nur Orders dieses Handelspaars stornieren
-                (z.B. 'BTC/USDT'). None storniert alle offenen Orders.
+        symbol: Trading pair to filter by, e.g. 'BTC/USDT'.
+                If None, cancels all open orders across all symbols.
 
     Returns:
-        Dict mit 'cancelled_count' und 'results' (Liste der stornierten
-        Orders) oder Fehler-Dict bei Misserfolg.
+        Dict with 'cancelled_count' and list of cancelled order IDs,
+        or 'error'/'type' on failure.
     """
+    if not has_credentials():
+        return _NO_CREDS
+
     try:
         async with spot_client() as exchange:
             if symbol:
-                # ccxt cancel_all_orders mit Symbol
-                results = await exchange.cancel_all_orders(symbol=symbol)
+                result = await exchange.cancel_all_orders(symbol)
+                cancelled = result if isinstance(result, list) else [result]
             else:
-                # Alle offenen Orders holen und einzeln stornieren
                 open_orders = await exchange.fetch_open_orders()
-                results = []
+                cancelled = []
                 for order in open_orders:
                     try:
-                        cancelled = await exchange.cancel_order(
-                            id=order["id"], symbol=order["symbol"]
-                        )
-                        results.append(format_order(cancelled))
-                    except ccxt.OrderNotFound:
-                        # Order bereits storniert oder ausgeführt
+                        r = await exchange.cancel_order(order["id"], order["symbol"])
+                        cancelled.append(r)
+                    except ccxt.BaseError:
                         pass
-                    except Exception as inner_exc:
-                        logger.warning(
-                            "Konnte Order %s nicht stornieren: %s", order.get("id"), inner_exc
-                        )
-                return {
-                    "symbol": symbol,
-                    "cancelled_count": len(results),
-                    "results": results,
-                }
 
-            formatted = (
-                [format_order(r) for r in results] if isinstance(results, list) else []
-            )
             return {
+                "cancelled_count": len(cancelled),
                 "symbol": symbol,
-                "cancelled_count": len(formatted),
-                "results": formatted,
+                "cancelled_ids": [o.get("id") for o in cancelled if isinstance(o, dict)],
             }
-    except ccxt.AuthenticationError as exc:
-        return format_error(exc)
-    except ccxt.BadSymbol as exc:
-        return format_error(exc)
-    except ccxt.NetworkError as exc:
-        logger.error("Netzwerkfehler bei cancel_all_spot_orders: %s", exc)
-        return format_error(exc)
-    except Exception as exc:
-        logger.error("Fehler bei cancel_all_spot_orders: %s", exc)
-        return format_error(exc)
+    except ccxt.BaseError as e:
+        return {"error": str(e), "type": type(e).__name__}
