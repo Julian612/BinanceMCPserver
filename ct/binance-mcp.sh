@@ -13,6 +13,7 @@ var_os="${var_os:-debian}"
 var_version="${var_version:-12}"
 var_unprivileged="${var_unprivileged:-1}"
 var_install="${var_install:-binance-mcp}"
+var_pw="${var_pw:-$(openssl rand -base64 12 | tr -d /=+ | head -c 16)}"
 
 header_info "$APP"
 variables
@@ -55,6 +56,11 @@ description
 
 msg_ok "Completed successfully!\n"
 echo -e "${CREATING}${GN}${APP} setup has been successfully initialized!${CL}"
+echo -e ""
+echo -e "${INFO}${YW} Container Login:${CL}"
+echo -e "${TAB}  User:     ${GN}root${CL}"
+echo -e "${TAB}  Password: ${GN}${var_pw}${CL}"
+echo -e ""
 echo -e "${INFO}${YW} Next step: configure your API keys:${CL}"
 echo -e "${TAB}${BGN}nano /opt/binance-mcp/.env${CL}"
 echo -e "${INFO}${YW} Then start the service:${CL}"
