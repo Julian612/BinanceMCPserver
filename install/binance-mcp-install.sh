@@ -18,6 +18,7 @@ $STD apt-get install -y \
   git \
   python3 \
   python3-pip \
+  python3-venv \
   build-essential \
   ca-certificates
 msg_ok "Installed Dependencies"
@@ -27,7 +28,8 @@ $STD curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR="/usr/local/bin
 msg_ok "Installed uv"
 
 msg_info "Cloning Binance MCP Server"
-$STD git clone https://github.com/Julian612/BinanceMCPserver /opt/binance-mcp
+$STD git clone --branch main --single-branch \
+  https://github.com/Julian612/BinanceMCPserver /opt/binance-mcp
 msg_ok "Cloned Repository"
 
 msg_info "Setting up Python environment"
